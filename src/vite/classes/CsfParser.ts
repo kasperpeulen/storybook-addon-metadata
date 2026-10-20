@@ -1,47 +1,10 @@
-import {
-  isArrayExpression,
-  isArrowFunctionExpression,
-  isBigIntLiteral,
-  isBooleanLiteral,
-  isCallExpression,
-  isFunctionExpression,
-  isIdentifier,
-  isImportDeclaration,
-  isImportDefaultSpecifier,
-  isImportSpecifier,
-  isJSXElement,
-  isJSXFragment,
-  isLogicalExpression,
-  isMemberExpression,
-  isNullLiteral,
-  isNumericLiteral,
-  isObjectExpression,
-  isObjectMethod,
-  isObjectProperty,
-  isRegExpLiteral,
-  isSpreadElement,
-  isStringLiteral,
-  isTemplateLiteral,
-  isTSAsExpression,
-  isTSNonNullExpression,
-} from '@babel/types';
-
 import { DEVELOPMENT_MODE } from '@/config';
 import { DEFAULTS, FALLBACK } from '@/constants';
 import { logger } from '@/utils';
 
 import type { ArgRecord, ArgValue } from '@/types';
-import type {
-  ExportNamedDeclaration,
-  Expression,
-  Node,
-  ObjectProperty,
-  PrivateName,
-  SpreadElement,
-  V8IntrinsicIdentifier,
-} from '@babel/types';
 import type { IndexedCSFFile } from 'storybook/internal/types';
-import type { CsfFile } from 'storybook/internal/csf-tools';
+import type { CsfFile, ESTree, ESTreeNode } from 'storybook/internal/csf-tools';
 import type { Primitive } from 'type-fest';
 
 /** Stored key for the main property we're looking for. */
@@ -49,7 +12,16 @@ const ARGS_KEY = 'args';
 /** Symbol to store meta args against in case a story shares the name we choose. */
 const MetaSymbol = Symbol('storyMeta');
 /** Development logger for recording uncovered usage. */
-const uncovered = logger(DEVELOPMENT_MODE, 'babel-parser-uncovered');
+const uncovered = logger(DEVELOPMENT_MODE, 'csf-parser-uncovered');
+
+/**
+ * Checks whether an object member is a method, getter or setter, which Babel
+ * called an `ObjectMethod`, rather than a plain `key: value` property.
+ * @param property The object member to check.
+ * @returns A boolean indicating whether the member is a method.
+ */
+const isMethod = (property: ESTree.ObjectProperty): boolean =>
+  property.method || property.kind !== 'init';
 
 /** Type alias for the args object. */
 type StoryFileArgs = Record<string, ArgRecord> & {
@@ -58,10 +30,10 @@ type StoryFileArgs = Record<string, ArgRecord> & {
 };
 
 /**
- * Babel AST parser for extracting data from AST nodes parsed by Storybook's
+ * Parser for extracting data from the ESTree nodes parsed by Storybook's
  * CSF reader.
  */
-class BabelParser {
+class CsfParser {
   /** The parsed story file from `readCsf`. */
   readonly #csf: CsfFile & IndexedCSFFile;
   /** The parsed args from stories and meta. */
@@ -89,9 +61,9 @@ class BabelParser {
     const cleaned: ArgRecord = {};
 
     for (const [key, value] of Object.entries(argRecord)) {
-      if (BabelParser.#isArgValue(value)) {
-        const cleanValue = BabelParser.#cleanArgValue(value, args);
-        if (!BabelParser.#isArgValue(cleanValue)) {
+      if (CsfParser.#isArgValue(value)) {
+        const cleanValue = CsfParser.#cleanArgValue(value, args);
+        if (!CsfParser.#isArgValue(cleanValue)) {
           for (const [argKey, argValue] of Object.entries(cleanValue)) {
             cleaned[argKey] = argValue;
           }
@@ -99,7 +71,7 @@ class BabelParser {
           cleaned[key] = cleanValue;
         }
       } else {
-        cleaned[key] = BabelParser.#cleanArgRecord(value, args);
+        cleaned[key] = CsfParser.#cleanArgRecord(value, args);
       }
     }
 
@@ -114,10 +86,10 @@ class BabelParser {
    * @returns The cleaned ArgValue.
    */
   static #cleanArgValue(argValue: ArgValue, args: StoryFileArgs): ArgRecord | ArgValue {
-    const { storyId, property } = BabelParser.#extractSpread(argValue) ?? {};
+    const { storyId, property } = CsfParser.#extractSpread(argValue) ?? {};
 
     if (property?.replace('?', '') === ARGS_KEY) {
-      const storyArgs = BabelParser.#findArgStory(args, storyId?.replace('?', ''));
+      const storyArgs = CsfParser.#findArgStory(args, storyId?.replace('?', ''));
 
       if (storyArgs) {
         return storyArgs;
@@ -162,7 +134,7 @@ class BabelParser {
       const [storyId, property] = spreadOf.value.split(DEFAULTS.CONNECTOR);
       return { storyId, property };
     } else if (spreadOf) {
-      return BabelParser.#extractSpread(spreadOf);
+      return CsfParser.#extractSpread(spreadOf);
     }
     return null;
   }
@@ -194,7 +166,7 @@ class BabelParser {
    * @param node The {@link Node} containing the story's args.
    * @param parent The name of the story that this belongs to.
    */
-  #addStoryArgs(node: Node | undefined, parent: string | typeof MetaSymbol): void {
+  #addStoryArgs(node: ESTreeNode | undefined, parent: string | typeof MetaSymbol): void {
     const args = this.#extractArgsFromObjectExpression(node);
 
     if (args) {
@@ -210,7 +182,7 @@ class BabelParser {
    */
   #cleanArgs() {
     for (const value of Object.values(this.#args)) {
-      BabelParser.#cleanArgRecord(value, this.#args);
+      CsfParser.#cleanArgRecord(value, this.#args);
     }
   }
 
@@ -218,19 +190,17 @@ class BabelParser {
    * Extracts the values of `args` from a story's AST.
    * @param stories The AST nodes for the story definitions.
    */
-  #extractArgsFromStoryStatements(
-    stories: Record<string, ExportNamedDeclaration | Expression>,
-  ): void {
+  #extractArgsFromStoryStatements(stories: Record<string, ESTreeNode>): void {
     for (const [storyName, node] of Object.entries(stories)) {
       // Find the 'args' property if it exists
-      if (isObjectExpression(node)) {
+      if (node.type === 'ObjectExpression') {
         const { properties } = node;
         for (const property of properties) {
           // Args should be a property on the object
-          if (isObjectProperty(property)) {
+          if (property.type === 'Property' && !isMethod(property)) {
             const { key, value } = property;
             // The key should be a simple identifier
-            if (isIdentifier(key) && key.name === ARGS_KEY) {
+            if (key.type === 'Identifier' && key.name === ARGS_KEY) {
               this.#addStoryArgs(value, storyName);
             }
           }
@@ -241,11 +211,11 @@ class BabelParser {
 
   /**
    * Extracts the values of an object and adds it to the `this.#args` object.
-   * @param node The {@link Node} containing the story's args.
+   * @param node The node containing the story's args.
    * @param parent The name of the story that this belongs to.
    */
   #extractArgsFromObjectExpression(
-    node: Node | undefined,
+    node: ESTreeNode | undefined,
     parent: string | undefined = FALLBACK.ARG,
   ): ArgRecord | null {
     if (!node) return null;
@@ -256,24 +226,10 @@ class BabelParser {
     // MemberExpression
     // Identifier
 
-    if (isObjectExpression(node)) {
+    if (node.type === 'ObjectExpression') {
       const { properties } = node;
       for (const property of properties) {
-        if (isObjectMethod(property)) {
-          const { key } = property;
-          const keyName = this.#extractKeyValue(key);
-          if (keyName) {
-            finalArgs[keyName] = { type: 'function', value: '() => {}' };
-          }
-        } else if (isObjectProperty(property)) {
-          const { key, value } = property;
-          const keyName = this.#extractKeyValue(key);
-          const propertyValue = this.#extractPropertyValue(value);
-          if (propertyValue && keyName) {
-            finalArgs[keyName] = propertyValue;
-          }
-        } else {
-          // SpreadElement
+        if (property.type === 'SpreadElement') {
           const { argument } = property;
           const argValue = this.#extractPropertyValue(argument, true);
           if (typeof argValue?.value === 'string') {
@@ -284,13 +240,26 @@ class BabelParser {
               finalArgs = { ...finalArgs, ...existing };
             }
           }
+        } else if (isMethod(property)) {
+          const { key } = property;
+          const keyName = this.#extractKeyValue(key);
+          if (keyName) {
+            finalArgs[keyName] = { type: 'function', value: '() => {}' };
+          }
+        } else {
+          const { key, value } = property;
+          const keyName = this.#extractKeyValue(key);
+          const propertyValue = this.#extractPropertyValue(value);
+          if (propertyValue && keyName) {
+            finalArgs[keyName] = propertyValue;
+          }
         }
       }
-    } else if (isTSNonNullExpression(node)) {
+    } else if (node.type === 'TSNonNullExpression') {
       // It's wrapped,
       const { expression } = node;
       return this.#extractArgsFromObjectExpression(expression);
-    } else if (isMemberExpression(node) || isIdentifier(node)) {
+    } else if (node.type === 'MemberExpression' || node.type === 'Identifier') {
       const value = this.#extractPropertyValue(node);
       if (value) {
         finalArgs[parent] = value;
@@ -312,24 +281,22 @@ class BabelParser {
     let name = '';
 
     const {
-      _ast: {
-        program: { body },
-      },
+      _program: { body },
       _rawComponentPath: expectedPath,
     } = this.#csf;
 
     for (const statement of body) {
-      if (isImportDeclaration(statement)) {
+      if (statement.type === 'ImportDeclaration') {
         const { source, specifiers } = statement;
         if (source.value === expectedPath) {
           const imports: string[] = [];
           for (const specifier of specifiers) {
-            if (isImportDefaultSpecifier(specifier)) {
+            if (specifier.type === 'ImportDefaultSpecifier') {
               imports.push('default');
-            } else if (isImportSpecifier(specifier)) {
+            } else if (specifier.type === 'ImportSpecifier') {
               const { local, imported } = specifier;
               const localAlias = local.name;
-              const importName = isIdentifier(imported) ? imported.name : imported.value;
+              const importName = imported.type === 'Identifier' ? imported.name : imported.value;
 
               if (localAlias !== importName) {
                 alias = localAlias;
@@ -349,16 +316,15 @@ class BabelParser {
    * @param key The key to extract the name for.
    * @returns The resolved name of the key, or undefined if none can be extracted.
    */
-  #extractKeyValue(key: Expression | PrivateName | V8IntrinsicIdentifier): string | undefined {
-    // ArrayExpression | AssignmentExpression | BinaryExpression | CallExpression | ConditionalExpression | FunctionExpression | Identifier | StringLiteral | NumericLiteral | NullLiteral | BooleanLiteral | RegExpLiteral | LogicalExpression | MemberExpression | NewExpression | ObjectExpression | SequenceExpression | ParenthesizedExpression | ThisExpression | UnaryExpression | UpdateExpression | ArrowFunctionExpression | ClassExpression | ImportExpression | MetaProperty | Super | TaggedTemplateExpression | TemplateLiteral | YieldExpression | AwaitExpression | Import | BigIntLiteral | OptionalMemberExpression | OptionalCallExpression | TypeCastExpression | JSXElement | JSXFragment | BindExpression | DoExpression | RecordExpression | TupleExpression | DecimalLiteral | ModuleExpression | TopicReference | PipelineTopicExpression | PipelineBareFunction | PipelinePrimaryTopicReference | TSInstantiationExpression | TSAsExpression | TSSatisfiesExpression | TSTypeAssertion | TSNonNullExpression
-    if (isIdentifier(key)) {
+  #extractKeyValue(key: ESTreeNode): string | undefined {
+    if (key.type === 'Identifier') {
       return key.name;
-    } else if (isMemberExpression(key)) {
+    } else if (key.type === 'MemberExpression') {
       const { object, optional, property } = key;
       const objectValue = this.#extractKeyValue(object);
       const propertyValue = this.#extractKeyValue(property);
-      return BabelParser.#composeAccessName(objectValue, propertyValue, optional ?? false);
-    } else if (isStringLiteral(key)) {
+      return CsfParser.#composeAccessName(objectValue, propertyValue, optional ?? false);
+    } else if (key.type === 'Literal' && typeof key.value === 'string') {
       return key.value;
     } else {
       uncovered.verbose('extractKeyValue', key.type);
@@ -372,10 +338,7 @@ class BabelParser {
    * @param isSpread Whether the parent element is a spread element.
    * @returns The extracted value, or nullif none can be extracted.
    */
-  #extractPropertyValue(
-    value: ObjectProperty['value'] | SpreadElement | null,
-    isSpread: boolean = false,
-  ): ArgValue | null {
+  #extractPropertyValue(value: ESTreeNode | null, isSpread: boolean = false): ArgValue | null {
     if (!value) return null;
 
     // TODO: Need to cover:
@@ -384,7 +347,7 @@ class BabelParser {
     // JSXElement
     // LogicalExpression ??
 
-    if (isArrayExpression(value)) {
+    if (value.type === 'ArrayExpression') {
       const { elements } = value;
       const values: Primitive[] = [];
       for (const element of elements) {
@@ -395,23 +358,24 @@ class BabelParser {
           values.push(elementValue.value);
         }
       }
-    } else if (isArrowFunctionExpression(value) || isFunctionExpression(value)) {
+    } else if (value.type === 'ArrowFunctionExpression' || value.type === 'FunctionExpression') {
       return { type: 'function', value: '() => {}' };
-    } else if (isBigIntLiteral(value)) {
-      return { type: 'number', value: value.value };
-    } else if (isBooleanLiteral(value)) {
+    } else if (value.type === 'Literal' && 'bigint' in value) {
+      // Babel kept a BigInt as written, without the `n` and any `_`
+      return { type: 'number', value: value.raw?.slice(0, -1).replace(/_/g, '') ?? value.bigint };
+    } else if (value.type === 'Literal' && 'regex' in value) {
+      return { type: 'string', value: value.regex.pattern };
+    } else if (value.type === 'Literal' && typeof value.value === 'boolean') {
       return { type: 'boolean', value: value.value };
-    } else if (isNullLiteral(value)) {
+    } else if (value.type === 'Literal' && value.value === null) {
       return { type: 'null', value: null };
-    } else if (isNumericLiteral(value)) {
+    } else if (value.type === 'Literal' && typeof value.value === 'number') {
       return { type: 'number', value: value.value };
-    } else if (isRegExpLiteral(value)) {
-      return { type: 'string', value: value.pattern };
-    } else if (isStringLiteral(value)) {
+    } else if (value.type === 'Literal' && typeof value.value === 'string') {
       return { type: 'string', value: value.value };
-    } else if (isTemplateLiteral(value)) {
+    } else if (value.type === 'TemplateLiteral') {
       return { type: 'string', value: value.quasis.map(quasi => quasi.value.raw).join(' ') };
-    } else if (isCallExpression(value)) {
+    } else if (value.type === 'CallExpression') {
       const { callee } = value;
       const calleeName = this.#extractKeyValue(callee);
       if (calleeName === 'fn') {
@@ -422,7 +386,7 @@ class BabelParser {
         // Just return unknown as we can only match against it having a value.
         return { type: 'unknown', value: value.toString() };
       }
-    } else if (isMemberExpression(value)) {
+    } else if (value.type === 'MemberExpression') {
       const accessorValue = this.#extractKeyValue(value);
       return isSpread && accessorValue
         ? {
@@ -431,22 +395,22 @@ class BabelParser {
             value: '',
           }
         : { type: 'reference', value: accessorValue };
-    } else if (isObjectExpression(value)) {
+    } else if (value.type === 'ObjectExpression') {
       const propertyData = this.#extractArgsFromObjectExpression(value);
       return { type: 'object', value: JSON.stringify(propertyData) };
-    } else if (isJSXFragment(value) || isJSXElement(value)) {
+    } else if (value.type === 'JSXFragment' || value.type === 'JSXElement') {
       return { type: 'jsx', value: value.toString() };
-    } else if (isIdentifier(value)) {
+    } else if (value.type === 'Identifier') {
       // We don't have the data to extract the value type here (without a whole
-      // host of additional babel parsing).
+      // host of additional parsing).
       // Record as a reference, and wait until we are parsing properly.
       const identifier = this.#extractKeyValue(value);
       return { type: 'reference', value: identifier };
-    } else if (isLogicalExpression(value)) {
+    } else if (value.type === 'LogicalExpression') {
       // TODO:
-    } else if (isTSAsExpression(value)) {
+    } else if (value.type === 'TSAsExpression') {
       // TODO:
-    } else if (isSpreadElement(value)) {
+    } else if (value.type === 'SpreadElement') {
       const { argument } = value;
       return {
         spreadOf: this.#extractPropertyValue(argument),
@@ -490,4 +454,4 @@ class BabelParser {
   }
 }
 
-export { BabelParser, MetaSymbol };
+export { CsfParser, MetaSymbol };

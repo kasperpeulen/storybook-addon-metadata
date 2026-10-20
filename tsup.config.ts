@@ -43,7 +43,7 @@ export default defineConfig(async options => {
     name,
   } = packageJson;
 
-  const GLOBALS = ['@babel/types', 'jiti', 'prettier', 'typescript'];
+  const GLOBALS = ['jiti', 'prettier', 'typescript'];
   name && GLOBALS.push(`.cache/${name}`);
 
   const commonConfig: Options = {

@@ -6,7 +6,7 @@ import { resolveModuleName } from 'typescript';
 
 import { REGEX } from '@/constants';
 
-import { BabelParser, MetaSymbol } from '../classes';
+import { CsfParser, MetaSymbol } from '../classes';
 
 import type { Typescript } from '../classes';
 import type { ParsedStoryFile, StorybookConfig } from '@/types';
@@ -51,7 +51,7 @@ const parseStoryFile = async (
     meta: { id, includeStories = [], excludeStories = [], tags = [], title },
     stories: csfStories,
   } = csf;
-  const argsParser = new BabelParser(csf);
+  const argsParser = new CsfParser(csf);
   const { args, componentName, importedAs } = argsParser.extractStoryFileData();
 
   // Resolve the component path to a module and extract the full path
