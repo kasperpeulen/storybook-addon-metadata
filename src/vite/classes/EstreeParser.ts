@@ -1,10 +1,10 @@
-import { staticKey, textOf, unwrapExpression } from 'storybook/internal/csf-tools';
-
 import { FALLBACK } from '@/constants';
 
+import { staticKey, textOf, unwrapExpression } from './estreeCsfTools';
+
+import type { CsfFile, CsfObject, CsfValue, ESTreeNode } from './estreeCsfTools';
 import type { ArgRecord, ArgValue } from '@/types';
 import type { IndexedCSFFile } from 'storybook/internal/types';
-import type { CsfFile, CsfObject, CsfValue, ESTreeNode } from 'storybook/internal/csf-tools';
 
 /** Stored key for the main property we're looking for. */
 const ARGS_KEY = 'args';
@@ -170,9 +170,10 @@ const readArgs = (object: CsfObject): ArgRecord => {
 
 /**
  * Parser for extracting args and component data from a story file through
- * Storybook's CSF reader.
+ * the ESTree csf-tools of Storybook 11. `BabelParser` does the same on
+ * Storybook 10.
  */
-class CsfParser {
+class EstreeParser {
   /** The parsed story file from `readCsf`. */
   readonly #csf: CsfFile & IndexedCSFFile;
 
@@ -214,4 +215,4 @@ class CsfParser {
   }
 }
 
-export { CsfParser, MetaSymbol };
+export { EstreeParser, MetaSymbol };
