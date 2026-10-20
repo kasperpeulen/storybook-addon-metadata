@@ -47,10 +47,10 @@ const parseStoryFile = async (
 
   // Extract the basic data that the CSF parser returns.
   const {
-    _rawComponentPath: componentPath,
     meta: { id, includeStories = [], excludeStories = [], tags = [], title },
     stories: csfStories,
   } = csf;
+  const componentPath = csf.componentImport?.source;
   const argsParser = new CsfParser(csf);
   const { args, componentName, importedAs } = argsParser.extractStoryFileData();
 

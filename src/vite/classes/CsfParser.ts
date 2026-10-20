@@ -109,22 +109,45 @@ const isUndefined = (node: ESTreeNode): boolean => {
 };
 
 /**
- * Reads the `args` of a meta or story.
+ * Checks whether an expression can have a static value, so that reading it
+ * with `getValue` does not record a diagnostic for a function, call, JSX,
+ * BigInt or regex.
+ * @param node The expression to check.
+ * @returns A boolean indicating whether the expression can have a value.
+ */
+const canHaveValue = (node: ESTreeNode): boolean => {
+  const inner = unwrapExpression(node);
+  if (inner.type === 'Literal') {
+    // BigInt and regex literals have no plain value
+    return !('bigint' in inner) && !('regex' in inner);
+  }
+  return [
+    'ArrayExpression',
+    'Identifier',
+    'ObjectExpression',
+    'TemplateLiteral',
+    'UnaryExpression',
+  ].includes(inner.type);
+};
+
+/**
+ * Reads the `args` of a meta or story. `inspect` reads without recording a
+ * diagnostic; `getValue` is only used where a plain value can result.
  * @param object The {@link CsfObject} for the meta or story.
  * @returns The {@link ArgRecord} of its args.
  */
 const readArgs = (object: CsfObject): ArgRecord => {
-  const value = object.getValue([ARGS_KEY]);
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return fromRecord(value as { readonly [key: string]: CsfValue });
-  }
+  const inspection = object.inspect([ARGS_KEY]);
+  if (inspection.kind !== 'value') return {};
 
-  // Some args have no static value: read each of them on its own.
-  const expression = object.get([ARGS_KEY]);
-  const node = expression && unwrapExpression(expression);
-  if (node?.type === 'Identifier' || node?.type === 'MemberExpression') {
-    return { [FALLBACK.ARG]: fromExpression(node) };
-  } else if (node?.type !== 'ObjectExpression') {
+  const node = unwrapExpression(inspection.node);
+  if (node.type === 'Identifier' || node.type === 'MemberExpression') {
+    // A name can stand for a local constant
+    const value = node.type === 'Identifier' ? object.getValue([ARGS_KEY]) : undefined;
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? fromRecord(value as { readonly [key: string]: CsfValue })
+      : { [FALLBACK.ARG]: fromExpression(node) };
+  } else if (node.type !== 'ObjectExpression') {
     return {};
   }
 
@@ -140,12 +163,14 @@ const readArgs = (object: CsfObject): ArgRecord => {
     }
 
     // An `undefined` arg is skipped, as `fromRecord` skips it
-    const argValue = object.getValue([ARGS_KEY, key]);
-    if (argValue !== undefined) {
-      args[key] = fromValue(argValue);
-    } else if (!isUndefined(property.value)) {
-      args[key] = fromExpression(property.value);
-    }
+    const { value: expression } = property;
+    if (isUndefined(expression)) continue;
+
+    // A field that a spread may override is unreadable, so only its source is known
+    const readable = object.inspect([ARGS_KEY, key]).kind === 'value';
+    const value =
+      readable && canHaveValue(expression) ? object.getValue([ARGS_KEY, key]) : undefined;
+    args[key] = value === undefined ? fromExpression(expression) : fromValue(value);
   }
   return args;
 };
@@ -169,22 +194,19 @@ class CsfParser {
   //== Private Methods
   //===================================
   /**
-   * Extracts the component's original name and the local alias (if any).
-   * `csf.imports` and `csf.meta.component` only give the module and the local
-   * name, so the imported name comes from the import specifier Storybook
-   * resolved for the meta's `component`.
+   * Extracts the component's original name and the local alias (if any) from
+   * the import the meta's `component` refers to.
    * @returns An object containing the original export name and the local alias.
    */
   #extractComponentName(): { alias: string | undefined; name: string } {
-    const specifier = this.#csf._componentImportSpecifier;
-    if (specifier?.type !== 'ImportSpecifier') {
+    const { componentImport } = this.#csf;
+    if (!componentImport || componentImport.imported === 'default') {
       // A default import has no name
       return { alias: undefined, name: '' };
     }
 
-    const { imported, local } = specifier;
-    const name = imported.type === 'Identifier' ? imported.name : imported.value;
-    return { alias: local.name === name ? undefined : local.name, name };
+    const { imported: name, local } = componentImport;
+    return { alias: local === name ? undefined : local, name };
   }
 
   //===================================
