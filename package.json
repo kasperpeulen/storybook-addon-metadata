@@ -38,7 +38,7 @@
     "release": "npm run build && npx semantic-release",
     "start": "npm run build && run-p build:watch \"storybook -- --no-open\"",
     "storybook": "storybook dev -p 6006",
-    "test": "echo \"Error: no test specified\" && exit 0",
+    "test": "node --import tsx --test \"test/**/*.test.ts\"",
     "tsc": "tsc"
   },
   "dependencies": {
