@@ -69,11 +69,13 @@ const parseStoryFile = async (
       )
     : null;
 
+  // Story args are keyed by export name
+  const exportNames = new Map(csf.indexInputs.map(input => [input.__id, input.exportName]));
+
   const stories = csfStories.map(story => {
-    const { name, localName } = story;
-    const storyName = localName ?? name;
     const metaArgs = args[MetaSymbol];
-    const storyArgs = storyName ? args[storyName] : {};
+    const exportName = exportNames.get(story.id);
+    const storyArgs = exportName ? args[exportName] : undefined;
 
     return {
       ...story,

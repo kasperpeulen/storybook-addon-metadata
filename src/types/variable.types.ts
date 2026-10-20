@@ -1,5 +1,6 @@
 /** Primitive value type. */
 type ValueType =
+  | 'array'
   | 'boolean'
   | 'function'
   | 'jsx'
