@@ -17,12 +17,23 @@ type StoryFileArgs = Record<string, ArgRecord> & {
   [MetaSymbol]: ArgRecord;
 };
 
+/** An object read with `CsfObject#getValue`. */
+type CsfRecord = { readonly [key: string]: CsfValue };
+
+/**
+ * Typeguard to check whether a value read with `CsfObject#getValue` is an object.
+ * @param value The value to check.
+ * @returns A boolean indicating whether the value is a {@link CsfRecord}.
+ */
+const isRecord = (value: CsfValue): value is CsfRecord =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
 /**
  * Converts the plain values of an object into an {@link ArgRecord}.
  * @param record The object read with `CsfObject#getValue`.
  * @returns The {@link ArgRecord} for the object.
  */
-const fromRecord = (record: { readonly [key: string]: CsfValue }): ArgRecord => {
+const fromRecord = (record: CsfRecord): ArgRecord => {
   const args: ArgRecord = {};
   for (const [key, value] of Object.entries(record)) {
     if (value !== undefined) {
@@ -40,12 +51,10 @@ const fromRecord = (record: { readonly [key: string]: CsfValue }): ArgRecord => 
 const fromValue = (value: Exclude<CsfValue, undefined>): ArgValue => {
   if (value === null) {
     return { type: 'null', value: null };
-  } else if (Array.isArray(value)) {
-    return { type: 'array', value: JSON.stringify(value) };
+  } else if (isRecord(value)) {
+    return { type: 'object', value: JSON.stringify(fromRecord(value)) };
   } else if (typeof value === 'object') {
-    // `Array.isArray` does not narrow out readonly arrays
-    const record = value as { readonly [key: string]: CsfValue };
-    return { type: 'object', value: JSON.stringify(fromRecord(record)) };
+    return { type: 'array', value: JSON.stringify(value) };
   } else if (typeof value === 'string') {
     return { type: 'string', value };
   } else if (typeof value === 'number') {
@@ -84,28 +93,13 @@ const fromExpression = (node: ESTreeNode): ArgValue => {
     case 'ObjectExpression':
       return { type: 'object', value };
     case 'Literal':
-      if (typeof inner.value === 'string' || typeof inner.value === 'number') {
-        return { type: typeof inner.value === 'string' ? 'string' : 'number', value: inner.value };
-      } else if (typeof inner.value === 'boolean') {
-        return { type: 'boolean', value: inner.value };
-      } else if (inner.raw === 'null') {
-        return { type: 'null', value: null };
-      }
-      return { type: 'unknown', value };
+      // BigInt and regex literals have no plain value
+      return 'bigint' in inner || 'regex' in inner
+        ? { type: 'unknown', value }
+        : fromValue(inner.value);
     default:
       return { type: 'unknown', value };
   }
-};
-
-/**
- * Checks whether an expression is `undefined`, which `getValue` cannot tell
- * apart from a value it cannot read.
- * @param node The expression to check.
- * @returns A boolean indicating whether the expression is `undefined`.
- */
-const isUndefined = (node: ESTreeNode): boolean => {
-  const inner = unwrapExpression(node);
-  return inner.type === 'Identifier' && inner.name === 'undefined';
 };
 
 /**
@@ -144,9 +138,7 @@ const readArgs = (object: CsfObject): ArgRecord => {
   if (node.type === 'Identifier' || node.type === 'MemberExpression') {
     // A name can stand for a local constant
     const value = node.type === 'Identifier' ? object.getValue([ARGS_KEY]) : undefined;
-    return value && typeof value === 'object' && !Array.isArray(value)
-      ? fromRecord(value as { readonly [key: string]: CsfValue })
-      : { [FALLBACK.ARG]: fromExpression(node) };
+    return isRecord(value) ? fromRecord(value) : { [FALLBACK.ARG]: fromExpression(node) };
   } else if (node.type !== 'ObjectExpression') {
     return {};
   }
@@ -162,9 +154,10 @@ const readArgs = (object: CsfObject): ArgRecord => {
       continue;
     }
 
-    // An `undefined` arg is skipped, as `fromRecord` skips it
+    // `getValue` can't tell `undefined` apart from an unreadable value, and `fromRecord` skips it
     const { value: expression } = property;
-    if (isUndefined(expression)) continue;
+    const inner = unwrapExpression(expression);
+    if (inner.type === 'Identifier' && inner.name === 'undefined') continue;
 
     // A field that a spread may override is unreadable, so only its source is known
     const readable = object.inspect([ARGS_KEY, key]).kind === 'value';
@@ -191,25 +184,6 @@ class CsfParser {
   }
 
   //===================================
-  //== Private Methods
-  //===================================
-  /**
-   * Extracts the component's original name and the local alias (if any) from
-   * the import the meta's `component` refers to.
-   * @returns An object containing the original export name and the local alias.
-   */
-  #extractComponentName(): { alias: string | undefined; name: string } {
-    const { componentImport } = this.#csf;
-    if (!componentImport || componentImport.imported === 'default') {
-      // A default import has no name
-      return { alias: undefined, name: '' };
-    }
-
-    const { imported: name, local } = componentImport;
-    return { alias: local === name ? undefined : local, name };
-  }
-
-  //===================================
   //== Public Methods
   //===================================
   /**
@@ -232,9 +206,11 @@ class CsfParser {
       }
     }
 
-    const { alias, name } = this.#extractComponentName();
+    // A default import has no name
+    const { componentImport } = this.#csf;
+    const named = componentImport?.imported === 'default' ? undefined : componentImport;
 
-    return { args, componentName: name, importedAs: alias ?? name };
+    return { args, componentName: named?.imported ?? '', importedAs: named?.local ?? '' };
   }
 }
 
