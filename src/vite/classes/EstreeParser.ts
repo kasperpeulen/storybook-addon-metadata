@@ -207,6 +207,15 @@ class EstreeParser {
       }
     }
 
+    // An alias, such as `export const Copy = Primary` or `export { Primary as Again }`, has no
+    // editor of its own; it shares the object, and so the args, of the story it names
+    for (const { code, target, aliasOf } of this.#csf.mutationDiagnostics) {
+      const original = aliasOf === undefined ? undefined : args[aliasOf];
+      if (code === 'aliased-story' && target.kind === 'story' && original) {
+        args[target.exportName] = original;
+      }
+    }
+
     // A default import has no name
     const { componentImport } = this.#csf;
     const named = componentImport?.imported === 'default' ? undefined : componentImport;

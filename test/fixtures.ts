@@ -21,6 +21,13 @@ const storyFiles = {
     const Base = { args: { label: 'Base' } };
     export { Base as Renamed };
   `,
+  aliasedStory: `
+    import { Button } from './Button';
+    export default { title: 'Example/Button', component: Button };
+    export const Primary = { args: { label: 'Primary' } };
+    export const Copy = Primary;
+    export { Primary as Again };
+  `,
   functions: `
     import { fn } from 'storybook/test';
     import { Button } from './Button';

@@ -45,6 +45,15 @@ describe('EstreeParser', { skip: needsEstree }, () => {
     });
   });
 
+  it('gives a story that aliases another the args of that story', () => {
+    const primary = { label: { type: 'string', value: 'Primary' } };
+    assert.deepEqual(extract(storyFiles.aliasedStory).stories, {
+      Again: primary,
+      Copy: primary,
+      Primary: primary,
+    });
+  });
+
   it('reads functions as their source', () => {
     const { meta, stories } = extract(storyFiles.functions);
     assert.deepEqual(meta, { onClick: { type: 'function', value: 'fn()' } });
